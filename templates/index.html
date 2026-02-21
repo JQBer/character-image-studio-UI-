@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Character Image Studio</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230c0c0e'/><circle cx='16' cy='16' r='10' fill='none' stroke='%23e53e3e' stroke-width='2'/><circle cx='16' cy='16' r='4' fill='%23e53e3e'/></svg>">
+</head>
+<body>
+
+<!-- ═══════ AUTH SCREEN ═══════ -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <svg viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg">
+        <rect width="56" height="56" rx="12" fill="#131316"/>
+        <rect x="1" y="1" width="54" height="54" rx="11" fill="none" stroke="#2a2a35" stroke-width="1"/>
+        <!-- Palette icon -->
+        <ellipse cx="28" cy="28" rx="16" ry="14" fill="none" stroke="#e53e3e" stroke-width="1.8"/>
+        <circle cx="20" cy="24" r="2.5" fill="#e53e3e"/>
+        <circle cx="25" cy="19" r="2.5" fill="#ecc94b"/>
+        <circle cx="32" cy="19" r="2.5" fill="#48bb78"/>
+        <circle cx="36" cy="24" r="2.5" fill="#4299e1"/>
+        <circle cx="34" cy="31" r="3.5" fill="#131316" stroke="#2a2a35" stroke-width="1"/>
+      </svg>
+    </div>
+    <div class="auth-header">
+      <h1><span class="accent">Character</span> Image Studio</h1>
+    </div>
+    <p class="auth-subtitle">
+      AI character image generation — create characters,<br>
+      generate them in any scene you want.
+    </p>
+
+    <div class="auth-disclaimer">
+      <p>This is a free, open-source interface for the <a href="https://github.com/NeukoAI/agent-skills" target="_blank">NeukoAI Character Image Studio</a> API — built for people who want to try the service without setting up AI agents or coding. All source code is public.</p>
+    </div>
+
+    <div class="auth-section">
+      <button class="btn btn-primary btn-large btn-block" id="btn-register">Create New Account</button>
+      <p class="auth-hint">Creates your credentials instantly. No email needed.</p>
+    </div>
+
+    <div class="auth-divider">or log in</div>
+
+    <div class="auth-section">
+      <div class="form-group">
+        <label class="form-label">Client ID</label>
+        <input type="text" id="auth-client-id" class="form-input" placeholder="Your client ID">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Client Secret</label>
+        <input type="password" id="auth-client-secret" class="form-input" placeholder="Your client secret">
+      </div>
+      <button class="btn btn-outline-red btn-block" id="btn-login">Log In</button>
+    </div>
+
+
+  </div>
+</div>
+
+<!-- ═══════ CREDENTIALS MODAL ═══════ -->
+<div class="modal-overlay" id="creds-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title">Your New Credentials</span>
+      <button class="modal-close" onclick="closeCredsModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="warning-box" style="margin-top:0;">
+        <h4>⚠ Save These Now</h4>
+        <p>Your <strong>Client Secret</strong> is shown only once. Copy both values and store them safely.</p>
+      </div>
+      <div class="cred-box">
+        <div class="cred-label">Client ID</div>
+        <div class="cred-value" id="new-cred-id">—</div>
+        <button class="copy-btn" onclick="copyText('new-cred-id')">Copy</button>
+      </div>
+      <div class="cred-box">
+        <div class="cred-label">Client Secret</div>
+        <div class="cred-value" id="new-cred-secret">—</div>
+        <button class="copy-btn" onclick="copyText('new-cred-secret')">Copy</button>
+      </div>
+      <div class="mt-20 text-center">
+        <button class="btn btn-primary" onclick="closeCredsModal()">I've Saved My Credentials</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ PAYMENT MODAL ═══════ -->
+<div class="modal-overlay" id="payment-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title">Payment</span>
+      <button class="modal-close" onclick="closePaymentModal()">&times;</button>
+    </div>
+    <div class="modal-body text-center" id="payment-modal-content">
+      <p class="mb-16">Preparing checkout...</p>
+      <div class="spinner"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ MAIN APP ═══════ -->
+<div id="app-screen" class="hidden app-layout">
+
+  <!-- HEADER -->
+  <header class="site-header">
+    <div class="header-left">
+      <div class="header-logo">
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+          <rect width="32" height="32" rx="7" fill="#131316"/>
+          <ellipse cx="16" cy="16" rx="9" ry="8" fill="none" stroke="#e53e3e" stroke-width="1.5"/>
+          <circle cx="12" cy="14" r="1.8" fill="#e53e3e"/>
+          <circle cx="15" cy="11" r="1.8" fill="#ecc94b"/>
+          <circle cx="19.5" cy="11" r="1.8" fill="#48bb78"/>
+          <circle cx="22" cy="14" r="1.8" fill="#4299e1"/>
+          <circle cx="20.5" cy="18.5" r="2.2" fill="#131316" stroke="#2a2a35" stroke-width="0.8"/>
+        </svg>
+      </div>
+      <span class="header-title"><span class="accent">Character</span> Image Studio</span>
+    </div>
+    <div class="header-right">
+      <span class="account-id-text" id="account-id-display"></span>
+      <span style="font-size:0.8125rem; color:var(--text-2);">
+        <span class="status-dot online" id="status-led"></span><span id="status-text">Online</span>
+      </span>
+      <div class="credit-pill">
+        <span class="label">Credits</span>
+        <span class="amount" id="credit-balance">—</span>
+      </div>
+      <button class="btn btn-small" id="btn-refresh-balance">↻</button>
+    </div>
+  </header>
+
+  <!-- NAV -->
+  <nav class="nav-bar" id="nav-tabs">
+    <button class="nav-tab active" data-panel="generate">Characters</button>
+    <button class="nav-tab" data-panel="gallery">Gallery</button>
+    <button class="nav-tab" data-panel="credits">Credits</button>
+    <button class="nav-tab" data-panel="how-it-works">How It Works</button>
+    <button class="nav-tab" data-panel="account">Account</button>
+  </nav>
+
+  <!-- CONTENT -->
+  <div class="main-content">
+
+    <!-- ═══ GENERATE (Characters) ═══ -->
+    <div class="panel active" id="panel-generate">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Image Generation</span></div>
+        <div class="card-body">
+          <!-- My Characters -->
+          <div id="my-characters-section" class="mb-16" style="display:none;">
+            <div class="cred-label" style="margin-bottom:8px;">MY CHARACTERS</div>
+            <div id="my-characters-grid" style="display:flex;flex-wrap:wrap;gap:10px;overflow-x:auto;"></div>
+          </div>
+
+          <!-- Cost info -->
+          <div class="cost-pills">
+            <div class="cost-pill">
+              <span class="cost-pill-label">SetChar (create character)</span>
+              <span class="cost-pill-value">~200</span>
+            </div>
+            <div class="cost-pill">
+              <span class="cost-pill-label">Generate (per image)</span>
+              <span class="cost-pill-value">10</span>
+            </div>
+          </div>
+
+          <div class="gen-tabs" id="gen-type-selector">
+            <button class="gen-tab active" data-type="setchar">SetChar</button>
+            <button class="gen-tab" data-type="generate">Generate</button>
+          </div>
+
+          <!-- SETCHAR FORM -->
+          <div class="gen-form active" id="gen-form-setchar">
+            <div class="description">
+              <strong>SetChar</strong> — Create a new character. Upload a seed image of your character and give it a name. The system generates <strong>20 reference images</strong> showing your character from different angles, poses, and lighting. Takes <strong>2-3 minutes</strong>, costs <strong>~200 credits</strong> (10 per image).<br>
+              After creation, your character appears in <strong>My Characters</strong> above and is available in the <strong>Generate</strong> tab.
+            </div>
+            <div class="form-group">
+              <label class="form-label">Character Name</label>
+              <input type="text" class="form-input" id="setchar-name" placeholder="e.g. Warrior, CyberGirl, BlueDragon...">
+              <div class="form-hint">A unique name for your character. This is how you'll reference them later.</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Seed Image (your character)</label>
+              <div class="file-upload-zone" id="setchar-upload-zone">
+                <div class="upload-icon">🖼️</div>
+                <div class="upload-text">Click or drag your character image here</div>
+                <div class="upload-hint">This image is the starting point. The AI will generate 20 variations from it.</div>
+                <input type="file" id="setchar-file-input" accept="image/*">
+              </div>
+              <div class="upload-preview" id="setchar-upload-preview"></div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Or Seed Image URL</label>
+              <input type="text" class="form-input" id="setchar-seed-url" placeholder="https://example.com/my-character.png">
+              <div class="form-hint">Paste a URL instead of uploading. You can use any image of your character.</div>
+            </div>
+            <button class="btn btn-primary" id="btn-gen-setchar">Create Character (~200 credits, 2-3 min)</button>
+          </div>
+
+          <!-- GENERATE FORM (using saved character) -->
+          <div class="gen-form" id="gen-form-generate">
+            <div class="description">
+              <strong>Generate</strong> — Generate an image of a saved character in any scene (10 credits). Select a character, describe the scene, and the AI uses the character's reference images for consistency.
+            </div>
+            <div id="generate-no-chars" class="warning-box" style="margin-top:0;">
+              <p>No characters yet. Go to the <strong>SetChar</strong> tab to create one first.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Select Character</label>
+              <select class="form-select" id="generate-character-select">
+                <option value="">— Select a character —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Scene Prompt</label>
+              <textarea class="form-textarea" id="generate-prompt" placeholder="The character standing on a cliff overlooking a burning city at sunset..."></textarea>
+              <div class="form-hint">Describe the scene. The reference images handle character consistency — just focus on the scene.</div>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-primary" id="btn-gen-generate">Generate Image (10 credits)</button>
+              <button class="btn btn-outline" id="btn-gen-random">🎲 Random Scene (10 credits)</button>
+            </div>
+          </div>
+
+          <!-- Result area -->
+          <div class="gen-result hidden" id="gen-result">
+            <div class="progress-wrap" id="gen-progress-container">
+              <div class="progress-bar-outer">
+                <div class="progress-bar-inner" id="gen-progress-bar" style="width:0%"></div>
+                <div class="progress-text" id="gen-progress-text">Waiting...</div>
+              </div>
+            </div>
+            <div id="gen-result-content"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ GALLERY ═══ -->
+    <div class="panel" id="panel-gallery">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Generation History</span></div>
+        <div class="card-body" id="gallery-content">
+          <p class="text-dim">Your generated images will appear here. Generate something first!</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ CREDITS ═══ -->
+    <div class="panel" id="panel-credits">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Credit Balance</span></div>
+        <div class="card-body">
+          <div class="stats-row">
+            <div class="stat-box">
+              <div class="stat-label">Available Credits</div>
+              <div class="stat-value red" id="credits-balance">—</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Buy Credits</span></div>
+        <div class="card-body">
+          <p style="color:var(--text-2); margin-bottom:16px;">
+            Payments via <strong>Stripe</strong> — secure, industry-standard. We never see your card details.
+          </p>
+          <div class="bundles-grid" id="bundles-grid">
+            <p class="text-dim">Loading bundles...</p>
+          </div>
+          <div class="text-center mt-20">
+            <button class="btn btn-primary btn-large" id="btn-buy" disabled>Purchase Selected Bundle</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Generation Costs</span></div>
+        <div class="card-body" id="pricing-table">
+          <p class="text-dim">Loading...</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Transaction History</span></div>
+        <div class="card-body" id="tx-history">
+          <p class="text-dim">Loading...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ HOW IT WORKS ═══ -->
+    <div class="panel" id="panel-how-it-works">
+      <div class="card">
+        <div class="card-header"><span class="card-title">How It Works — Full Transparency</span></div>
+        <div class="card-body">
+
+          <div class="info-section">
+            <h3>What Is This?</h3>
+            <div class="info-card">
+              <p>A web interface for the <strong>NeukoAI Character Image Studio</strong> API. 
+              This app doesn't run AI models — it sends requests to <code>api-imagegen.neuko.ai</code> and displays results.</p>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3>How To Use — 2 Steps</h3>
+            <div class="info-card">
+              <h4>Step 1: SetChar — Create a Character <span class="cost-badge">~200 credits</span></h4>
+              <p>Upload any image of your character + give it a name. The system generates <strong>20 reference images</strong> from different angles, poses, and lighting conditions. This "teaches" the AI what your character looks like. Takes 2-3 minutes. You can create as many characters as you want.</p>
+            </div>
+            <div class="info-card">
+              <h4>Step 2: Generate — Use Your Character <span class="cost-badge">10 credits</span></h4>
+              <p>Select a character from the dropdown, describe any scene ("standing on a cliff at sunset", "in a coffee shop", etc.). The AI generates your character in that scene, using the 20 reference images for visual consistency. You can generate as many images as you want.</p>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3>Costs</h3>
+            <div class="info-card">
+              <table class="tx-table" style="margin:0;">
+                <thead><tr><th>Action</th><th>Cost</th><th>What it does</th></tr></thead>
+                <tbody>
+                  <tr><td><strong>SetChar</strong></td><td>~200 credits</td><td>Creates 20 reference images of your character (one-time per character)</td></tr>
+                  <tr><td><strong>Generate</strong></td><td>10 credits</td><td>Generates 1 image of your character in a scene you describe</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3>Credits &amp; Payments</h3>
+            <div class="info-card">
+              <p>All payments go through <strong>Stripe</strong>. Buy credit bundles, credits deducted per generation. Pricing is live from the API. No hidden fees — what the API charges is what you pay.</p>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3>Data &amp; Privacy</h3>
+            <div class="info-card">
+              <p>Credentials stored <strong>locally only</strong> in <code>user_credentials.json</code>. Nothing sent to third parties except the NeukoAI API. All data stays on your machine.</p>
+            </div>
+          </div>
+
+          <div class="info-section">
+            <h3>Source Code</h3>
+            <div class="info-card">
+              <p>NeukoAI agent skills are open-source: <a href="https://github.com/NeukoAI/agent-skills" target="_blank">github.com/NeukoAI/agent-skills</a>. Inspect all API calls in this app's source.</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ ACCOUNT ═══ -->
+    <div class="panel" id="panel-account">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Account Info</span></div>
+        <div class="card-body" id="account-details">
+          <p class="text-dim">Loading...</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Credentials</span></div>
+        <div class="card-body">
+          <div class="warning-box" style="margin-top:0;">
+            <h4>⚠ Keep These Safe</h4>
+            <p>Your credentials are the only way to access this account. Export and store them securely.</p>
+          </div>
+          <div class="cred-box">
+            <div class="cred-label">Client ID</div>
+            <div class="cred-value" id="cred-client-id">—</div>
+            <button class="copy-btn" onclick="copyText('cred-client-id')">Copy</button>
+          </div>
+          <div class="cred-box">
+            <div class="cred-label">Client Secret</div>
+            <div class="cred-value" id="cred-client-secret">—</div>
+            <button class="copy-btn" onclick="copyText('cred-client-secret')">Copy</button>
+          </div>
+          <div class="btn-group mt-20">
+            <button class="btn btn-outline-yellow" id="btn-export-creds">Export Credentials</button>
+            <button class="btn" id="btn-rotate-secret">Rotate Secret</button>
+            <button class="btn btn-danger" id="btn-logout">Log Out</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main-content -->
+
+  <footer class="site-footer">
+    <div class="footer-disclaimer">
+      Open-source project — not affiliated with NeukoAI. Built for users who want to try the Character Image Studio API without AI agents.
+    </div>
+    <div class="footer-links">
+      <a href="https://neuko.ai" target="_blank">neuko.ai</a>
+      <a href="https://github.com/NeukoAI/agent-skills" target="_blank">GitHub</a>
+      <a href="#" onclick="switchPanel('how-it-works'); return false;">How It Works</a>
+    </div>
+    <p>Character Image Studio &bull; 2025</p>
+  </footer>
+
+</div><!-- /app-screen -->
+
+<!-- TOAST -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
