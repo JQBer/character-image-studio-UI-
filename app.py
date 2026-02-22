@@ -346,6 +346,71 @@ def _save_characters(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def _scan_character_folders():
+    """Scan characters/ for manually added folders and register them.
+    
+    Detects subfolders that contain image files but aren't in registry.json,
+    and adds them automatically. Also refreshes local_files for existing entries.
+    """
+    if not CHARACTERS_DIR.exists():
+        return
+    
+    IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}
+    data = _load_characters()
+    chars = data.get("characters", [])
+    known_slugs = {c.get("slug") for c in chars}
+    changed = False
+
+    for entry in CHARACTERS_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        slug = entry.name
+        if slug.startswith('.') or slug == '__pycache__':
+            continue
+
+        # Gather image files in this folder
+        image_files = sorted([
+            f.name for f in entry.iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        ])
+
+        if not image_files:
+            continue  # empty folder — skip
+
+        if slug not in known_slugs:
+            # New manually-added folder — register it
+            display_name = slug.replace('-', ' ').replace('_', ' ').title()
+            print(f"[SCAN] Found new character folder: {slug} ({len(image_files)} images)")
+            char_entry = {
+                "name": display_name,
+                "slug": slug,
+                "seed_url": "",
+                "reference_urls": [],  # no remote URLs for manual imports
+                "local_files": image_files,
+                "reference_count": len(image_files),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "local_dir": str(CHARACTERS_DIR / slug),
+            }
+            chars.append(char_entry)
+            known_slugs.add(slug)
+            changed = True
+        else:
+            # Existing entry — refresh local_files in case user added/removed images
+            for c in chars:
+                if c.get("slug") == slug:
+                    old_files = c.get("local_files", [])
+                    if sorted(old_files) != sorted(image_files):
+                        print(f"[SCAN] Updated files for {slug}: {len(old_files)} → {len(image_files)}")
+                        c["local_files"] = image_files
+                        c["reference_count"] = max(len(image_files), len(c.get("reference_urls", [])))
+                        changed = True
+                    break
+
+    if changed:
+        data["characters"] = chars
+        _save_characters(data)
+
+
 def _download_character_images(slug, reference_urls):
     """Download reference images to characters/<slug>/ folder. Returns list of filenames."""
     char_dir = CHARACTERS_DIR / slug
@@ -374,7 +439,16 @@ def _download_character_images(slug, reference_urls):
 
 @app.route("/api/characters", methods=["GET"])
 def list_characters():
+    _scan_character_folders()  # auto-detect manually added folders
     return jsonify(_load_characters())
+
+
+@app.route("/api/characters/rescan", methods=["POST"])
+def rescan_characters():
+    """Force rescan of characters/ folder and return updated list."""
+    _scan_character_folders()
+    data = _load_characters()
+    return jsonify({"success": True, "characters": data.get("characters", []), "count": len(data.get("characters", []))})
 
 
 @app.route("/api/characters", methods=["POST"])
@@ -463,6 +537,49 @@ def open_character_folder(slug):
 # Routes — Image Generation
 # ──────────────────────────────────────────────
 
+
+def _get_local_refs_as_base64(slug, max_refs=15):
+    """Read local reference images for a character and return as base64 data URIs.
+    Used when a character has no remote reference_urls (manually imported)."""
+    import base64 as b64mod
+    data = _load_characters()
+    char = None
+    for c in data.get("characters", []):
+        if c.get("slug") == slug:
+            char = c
+            break
+    if not char:
+        return []
+
+    local_files = char.get("local_files", [])
+    if not local_files:
+        return []
+
+    MIME_MAP = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp',
+    }
+    char_dir = CHARACTERS_DIR / slug
+    result = []
+    for fname in local_files[:max_refs]:
+        fpath = char_dir / fname
+        if not fpath.is_file():
+            continue
+        ext = fpath.suffix.lower()
+        mime = MIME_MAP.get(ext, 'image/png')
+        try:
+            raw = fpath.read_bytes()
+            b64 = b64mod.b64encode(raw).decode('ascii')
+            data_uri = f"data:{mime};base64,{b64}"
+            # Compress if too large (>4MB)
+            data_uri = _compress_base64_image(data_uri)
+            result.append(data_uri)
+        except Exception as e:
+            print(f"[BASE64] Error reading {fpath}: {e}")
+    print(f"[BASE64] Converted {len(result)} local images for character '{slug}'")
+    return result
+
+
 @app.route("/api/generate/seed", methods=["POST"])
 def generate_seed():
     body = request.json or {}
@@ -474,7 +591,7 @@ def generate_seed():
                 "prompt": body.get("prompt", ""),
                 "aspect_ratio": body.get("aspect_ratio", "1:1"),
             },
-            timeout=30,
+            timeout=60,
         )
         if resp.status_code == 401:
             if auto_login():
@@ -485,9 +602,18 @@ def generate_seed():
                         "prompt": body.get("prompt", ""),
                         "aspect_ratio": body.get("aspect_ratio", "1:1"),
                     },
-                    timeout=30,
+                    timeout=60,
                 )
-        return jsonify(resp.json()), resp.status_code
+        # Pass through 402 (insufficient credits) and 429 (rate limit)
+        if resp.status_code in (402, 429):
+            try:
+                return jsonify(resp.json()), resp.status_code
+            except Exception:
+                return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"API returned non-JSON (HTTP {resp.status_code})"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -495,30 +621,42 @@ def generate_seed():
 @app.route("/api/generate/create", methods=["POST"])
 def generate_create():
     body = request.json or {}
+    ref_urls = body.get("reference_image_urls", [])
+    # If no remote URLs but a character_slug provided, use local images as base64
+    char_slug = body.get("character_slug", "")
+    if not ref_urls and char_slug:
+        ref_urls = _get_local_refs_as_base64(char_slug)
+        if not ref_urls:
+            return jsonify({"error": "Character has no reference images (local or remote)"}), 400
     try:
+        payload = {
+            "prompt": body.get("prompt", ""),
+            "reference_image_urls": ref_urls,
+            "input_image_url": body.get("input_image_url", None),
+        }
         resp = http_requests.post(
             f"{API_BASE_URL}/api/v1/generate/create",
             headers=get_auth_header(),
-            json={
-                "prompt": body.get("prompt", ""),
-                "reference_image_urls": body.get("reference_image_urls", []),
-                "input_image_url": body.get("input_image_url", None),
-            },
-            timeout=30,
+            json=payload,
+            timeout=60,
         )
         if resp.status_code == 401:
             if auto_login():
                 resp = http_requests.post(
                     f"{API_BASE_URL}/api/v1/generate/create",
                     headers=get_auth_header(),
-                    json={
-                        "prompt": body.get("prompt", ""),
-                        "reference_image_urls": body.get("reference_image_urls", []),
-                        "input_image_url": body.get("input_image_url", None),
-                    },
-                    timeout=30,
+                    json=payload,
+                    timeout=60,
                 )
-        return jsonify(resp.json()), resp.status_code
+        if resp.status_code in (402, 429):
+            try:
+                return jsonify(resp.json()), resp.status_code
+            except Exception:
+                return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"API returned non-JSON (HTTP {resp.status_code})"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -526,28 +664,41 @@ def generate_create():
 @app.route("/api/generate/random", methods=["POST"])
 def generate_random():
     body = request.json or {}
+    ref_urls = body.get("reference_image_urls", [])
+    # If no remote URLs but a character_slug provided, use local images as base64
+    char_slug = body.get("character_slug", "")
+    if not ref_urls and char_slug:
+        ref_urls = _get_local_refs_as_base64(char_slug)
+        if not ref_urls:
+            return jsonify({"error": "Character has no reference images (local or remote)"}), 400
     try:
+        payload = {
+            "reference_image_urls": ref_urls,
+            "character_description": body.get("character_description", ""),
+        }
         resp = http_requests.post(
             f"{API_BASE_URL}/api/v1/generate/random",
             headers=get_auth_header(),
-            json={
-                "reference_image_urls": body.get("reference_image_urls", []),
-                "character_description": body.get("character_description", ""),
-            },
-            timeout=30,
+            json=payload,
+            timeout=60,
         )
         if resp.status_code == 401:
             if auto_login():
                 resp = http_requests.post(
                     f"{API_BASE_URL}/api/v1/generate/random",
                     headers=get_auth_header(),
-                    json={
-                        "reference_image_urls": body.get("reference_image_urls", []),
-                        "character_description": body.get("character_description", ""),
-                    },
-                    timeout=30,
+                    json=payload,
+                    timeout=60,
                 )
-        return jsonify(resp.json()), resp.status_code
+        if resp.status_code in (402, 429):
+            try:
+                return jsonify(resp.json()), resp.status_code
+            except Exception:
+                return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+        try:
+            return jsonify(resp.json()), resp.status_code
+        except Exception:
+            return jsonify({"error": f"API returned non-JSON (HTTP {resp.status_code})"}), 502
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -616,35 +767,67 @@ def generate_turnaround():
         "prompts": prompts,
         "reference_image_urls": ref_urls,
     }
-    try:
-        resp = http_requests.post(
-            f"{API_BASE_URL}/api/v1/generate/turnaround",
-            headers=get_auth_header(),
-            json=payload,
-            timeout=120,
-        )
-        print(f"[TURNAROUND] API response status: {resp.status_code}")
-        print(f"[TURNAROUND] API response body: {resp.text[:500]}")
 
-        if resp.status_code == 401:
-            if auto_login():
-                resp = http_requests.post(
-                    f"{API_BASE_URL}/api/v1/generate/turnaround",
-                    headers=get_auth_header(),
-                    json=payload,
-                    timeout=120,
-                )
-                print(f"[TURNAROUND] Retry response status: {resp.status_code}")
-                print(f"[TURNAROUND] Retry response body: {resp.text[:500]}")
-
+    # Retry logic for 502/504 gateway errors (API overloaded)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
         try:
-            return jsonify(resp.json()), resp.status_code
-        except Exception:
-            print(f"[TURNAROUND] Failed to parse JSON response: {resp.text[:500]}")
-            return jsonify({"error": f"API returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}"}), 502
-    except Exception as e:
-        print(f"[TURNAROUND] Exception: {e}")
-        return jsonify({"error": str(e)}), 500
+            resp = http_requests.post(
+                f"{API_BASE_URL}/api/v1/generate/turnaround",
+                headers=get_auth_header(),
+                json=payload,
+                timeout=180,
+            )
+            print(f"[TURNAROUND] Attempt {attempt} — API response status: {resp.status_code}")
+            print(f"[TURNAROUND] API response body: {resp.text[:500]}")
+
+            if resp.status_code == 401:
+                if auto_login():
+                    resp = http_requests.post(
+                        f"{API_BASE_URL}/api/v1/generate/turnaround",
+                        headers=get_auth_header(),
+                        json=payload,
+                        timeout=180,
+                    )
+                    print(f"[TURNAROUND] Retry-auth response status: {resp.status_code}")
+                    print(f"[TURNAROUND] Retry-auth response body: {resp.text[:500]}")
+
+            # Retry on 502/504 gateway errors (API gateway overloaded, not a real failure)
+            if resp.status_code in (502, 503, 504) and attempt < max_retries:
+                wait = attempt * 10  # 10s, 20s
+                print(f"[TURNAROUND] Got {resp.status_code} — retrying in {wait}s (attempt {attempt}/{max_retries})...")
+                time.sleep(wait)
+                continue
+
+            try:
+                return jsonify(resp.json()), resp.status_code
+            except Exception:
+                print(f"[TURNAROUND] Failed to parse JSON response: {resp.text[:500]}")
+                # On last attempt, return error; otherwise retry
+                if attempt < max_retries:
+                    wait = attempt * 10
+                    print(f"[TURNAROUND] Non-JSON response — retrying in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                return jsonify({"error": f"API returned non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}"}), 502
+
+        except http_requests.exceptions.Timeout:
+            print(f"[TURNAROUND] Timeout on attempt {attempt}/{max_retries}")
+            if attempt < max_retries:
+                wait = attempt * 10
+                print(f"[TURNAROUND] Retrying in {wait}s...")
+                time.sleep(wait)
+                continue
+            return jsonify({"error": "API request timed out after multiple retries"}), 504
+
+        except Exception as e:
+            print(f"[TURNAROUND] Exception on attempt {attempt}: {e}")
+            if attempt < max_retries:
+                time.sleep(5)
+                continue
+            return jsonify({"error": str(e)}), 500
+
+    return jsonify({"error": "All retry attempts failed"}), 502
 
 
 # ──────────────────────────────────────────────
@@ -657,23 +840,35 @@ def asset_status(generation_id):
         resp = http_requests.get(
             f"{API_BASE_URL}/api/v1/asset/status/{generation_id}",
             headers=get_auth_header(),
-            timeout=10,
+            timeout=30,
         )
         if resp.status_code == 401:
             if auto_login():
                 resp = http_requests.get(
                     f"{API_BASE_URL}/api/v1/asset/status/{generation_id}",
                     headers=get_auth_header(),
-                    timeout=10,
+                    timeout=30,
                 )
-        data = resp.json()
+        # Pass 429 through to frontend for rate-limit backoff
+        if resp.status_code == 429:
+            print(f"[STATUS] {generation_id[:8]}... RATE LIMITED (429)")
+            return jsonify({"error": "rate_limited"}), 429
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"[STATUS] {generation_id[:8]}... non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}")
+            # Return a temporary-error marker so JS knows to retry
+            return jsonify({"data": {"status": "pending"}, "_retry": True}), 200
         inner = data.get('data', data)
         status = inner.get('status', '?')
         print(f"[STATUS] {generation_id[:8]}... → {status}")
         return jsonify(data), resp.status_code
+    except http_requests.exceptions.Timeout:
+        print(f"[STATUS] {generation_id[:8]}... TIMEOUT")
+        return jsonify({"data": {"status": "pending"}, "_retry": True}), 200
     except Exception as e:
         print(f"[STATUS] {generation_id[:8]}... ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"data": {"status": "pending"}, "_retry": True}), 200
 
 
 @app.route("/api/asset/download/<generation_id>", methods=["GET"])
@@ -682,21 +877,35 @@ def asset_download(generation_id):
         resp = http_requests.get(
             f"{API_BASE_URL}/api/v1/asset/download/{generation_id}",
             headers=get_auth_header(),
-            timeout=10,
+            timeout=30,
         )
         if resp.status_code == 401:
             if auto_login():
                 resp = http_requests.get(
                     f"{API_BASE_URL}/api/v1/asset/download/{generation_id}",
                     headers=get_auth_header(),
-                    timeout=10,
+                    timeout=30,
                 )
-        data = resp.json()
+        # Pass 429 (rate limit) and 409 (not ready) through to frontend
+        if resp.status_code == 429:
+            print(f"[DOWNLOAD] {generation_id[:8]}... RATE LIMITED (429)")
+            return jsonify({"error": "rate_limited"}), 429
+        if resp.status_code == 409:
+            print(f"[DOWNLOAD] {generation_id[:8]}... NOT READY (409)")
+            return jsonify({"error": "not_ready"}), 409
+        try:
+            data = resp.json()
+        except Exception:
+            print(f"[DOWNLOAD] {generation_id[:8]}... non-JSON response (HTTP {resp.status_code}): {resp.text[:200]}")
+            return jsonify({"error": "temporary", "_retry": True}), 503
         print(f"[DOWNLOAD] {generation_id[:8]}... → HTTP {resp.status_code}, body: {str(data)[:200]}")
         return jsonify(data), resp.status_code
+    except http_requests.exceptions.Timeout:
+        print(f"[DOWNLOAD] {generation_id[:8]}... TIMEOUT")
+        return jsonify({"error": "temporary", "_retry": True}), 503
     except Exception as e:
         print(f"[DOWNLOAD] {generation_id[:8]}... ERROR: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "_retry": True}), 503
 
 
 # ──────────────────────────────────────────────

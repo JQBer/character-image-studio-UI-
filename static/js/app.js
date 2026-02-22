@@ -44,6 +44,44 @@ const uploadedFiles = {
   setchar: null // single base64 data URL for seed image
 };
 
+// ══════════ PENDING SETCHAR RECOVERY (localStorage) ══════════
+const PENDING_SETCHAR_KEY = 'cis_pending_setchar';
+
+function savePendingSetChar(name, seedUrl, genIds) {
+  const data = {
+    name,
+    seedUrl: seedUrl.startsWith('data:') ? '' : seedUrl, // don't store huge base64
+    genIds,
+    startedAt: Date.now(),
+    completed: {},
+    failed: []
+  };
+  localStorage.setItem(PENDING_SETCHAR_KEY, JSON.stringify(data));
+}
+
+function updatePendingSetChar(completed, failed) {
+  try {
+    const raw = localStorage.getItem(PENDING_SETCHAR_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    data.completed = completed;
+    data.failed = failed;
+    localStorage.setItem(PENDING_SETCHAR_KEY, JSON.stringify(data));
+  } catch { /* ignore */ }
+}
+
+function clearPendingSetChar() {
+  localStorage.removeItem(PENDING_SETCHAR_KEY);
+}
+
+function getPendingSetChar() {
+  try {
+    const raw = localStorage.getItem(PENDING_SETCHAR_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+
 // ══════════ INIT ══════════
 document.addEventListener('DOMContentLoaded', () => {
   // Auth
@@ -237,6 +275,32 @@ function enterApp(clientId) {
   loadTransactions();
   loadCharacters();
   loadGallery();
+  // Check for interrupted SetChar process
+  checkPendingSetChar();
+
+  // Rescan characters button
+  const rescanBtn = document.getElementById('btn-rescan-chars');
+  if (rescanBtn) {
+    rescanBtn.onclick = async () => {
+      rescanBtn.disabled = true;
+      rescanBtn.textContent = '⏳ Scanning…';
+      try {
+        const res = await fetch('/api/characters/rescan', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Scan complete — ${data.count} character(s) found`, 'success');
+          await loadCharacters();
+        } else {
+          showToast('Rescan failed', 'error');
+        }
+      } catch (e) {
+        showToast('Rescan error: ' + e.message, 'error');
+      } finally {
+        rescanBtn.disabled = false;
+        rescanBtn.textContent = '🔄 Rescan';
+      }
+    };
+  }
 }
 
 async function doLogout() {
@@ -577,6 +641,14 @@ async function generateSetChar() {
       })
     });
     const data = await res.json();
+    if (res.status === 402) {
+      toast('Insufficient credits — buy more in the Credits tab', 'error');
+      hideGenProgress(); btn.disabled = false; return;
+    }
+    if (res.status === 429) {
+      toast('Rate limited — please wait a minute and try again', 'warning');
+      hideGenProgress(); btn.disabled = false; return;
+    }
     if (data.error) { toast('Error: ' + data.error, 'error'); hideGenProgress(); btn.disabled = false; return; }
 
     const gen = data.data || data;
@@ -586,17 +658,32 @@ async function generateSetChar() {
     const genIds = images.map(img => img.generation_id || img.id).filter(Boolean);
     if (genIds.length === 0) { toast('No generation IDs returned', 'error'); hideGenProgress(); btn.disabled = false; return; }
 
-    // Poll all 20 images
+    // Save to localStorage so we can recover after page refresh/close
+    savePendingSetChar(name, seedImageUrl, genIds);
+
+    // Poll all images
     const referenceUrls = await pollSetCharBatch(genIds);
 
-    if (referenceUrls.length === 0) {
-      toast('No images completed successfully', 'error');
-      hideGenProgress();
-      btn.disabled = false;
-      return;
-    }
+    await finalizeSetChar(name, seedImageUrl, referenceUrls);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    hideGenProgress();
+    btn.disabled = false;
+  }
+}
 
-    // Save character to server
+// Finalize character save (shared between new and recovered SetChar)
+async function finalizeSetChar(name, seedImageUrl, referenceUrls) {
+  clearPendingSetChar();
+
+  if (referenceUrls.length === 0) {
+    toast('No images completed successfully', 'error');
+    return;
+  }
+
+  // Save character to server
+  try {
     const saveRes = await fetch('/api/characters', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -617,7 +704,48 @@ async function generateSetChar() {
       toast('Save failed: ' + (saveData.error || 'unknown'), 'error');
     }
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    toast('Save error: ' + e.message, 'error');
+  }
+}
+
+// Check for interrupted SetChar on page load
+async function checkPendingSetChar() {
+  const pending = getPendingSetChar();
+  if (!pending || !pending.genIds || pending.genIds.length === 0) return;
+
+  // If started more than 20 minutes ago, it's too old — clear it
+  const ageMinutes = (Date.now() - pending.startedAt) / 60000;
+  if (ageMinutes > 20) {
+    clearPendingSetChar();
+    return;
+  }
+
+  // Check how many are already completed from previous session
+  const prevCompleted = pending.completed || {};
+  const prevCompletedCount = Object.keys(prevCompleted).length;
+  const totalIds = pending.genIds.length;
+
+  const msg = prevCompletedCount > 0
+    ? `Found interrupted SetChar process for "${pending.name}" (${prevCompletedCount}/${totalIds} collected).\n\nResume polling remaining images?`
+    : `Found interrupted SetChar process for "${pending.name}" (${totalIds} images).\n\nResume polling? (started ${Math.round(ageMinutes)} min ago)`;
+
+  if (!confirm(msg)) {
+    clearPendingSetChar();
+    return;
+  }
+
+  // Switch to SetChar tab and show progress
+  selectGenType('setchar');
+  showGenProgress(`Resuming "${pending.name}"... ${prevCompletedCount}/${totalIds} already collected`);
+  const btn = document.getElementById('btn-gen-setchar');
+  btn.disabled = true;
+
+  try {
+    // Resume polling with previously completed URLs pre-loaded
+    const referenceUrls = await pollSetCharBatch(pending.genIds, prevCompleted);
+    await finalizeSetChar(pending.name, pending.seedUrl || '', referenceUrls);
+  } catch (e) {
+    toast('Recovery error: ' + e.message, 'error');
   } finally {
     hideGenProgress();
     btn.disabled = false;
@@ -633,14 +761,19 @@ async function generateWithCharacter() {
   if (!prompt) { toast('Enter a scene prompt', 'warning'); return; }
 
   const char = cachedCharacters.find(c => c.slug === slug);
-  if (!char || !char.reference_urls || char.reference_urls.length === 0) {
+  const hasRemoteRefs = char && char.reference_urls && char.reference_urls.length > 0;
+  const hasLocalFiles = char && char.local_files && char.local_files.length > 0;
+  if (!char || (!hasRemoteRefs && !hasLocalFiles)) {
     toast('Character has no reference images', 'error');
     return;
   }
 
   const btn = document.getElementById('btn-gen-generate');
   btn.disabled = true;
-  showGenProgress('Generating image with ' + char.name + '...');
+  const progressMsg = hasRemoteRefs
+    ? 'Generating image with ' + char.name + '...'
+    : 'Converting local images & generating with ' + char.name + '...';
+  showGenProgress(progressMsg);
 
   try {
     const res = await fetch('/api/generate/create', {
@@ -648,11 +781,14 @@ async function generateWithCharacter() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: prompt,
-        reference_image_urls: char.reference_urls.slice(0, 15),
+        reference_image_urls: hasRemoteRefs ? char.reference_urls.slice(0, 15) : [],
+        character_slug: hasRemoteRefs ? '' : char.slug,
         input_image_url: null
       })
     });
     const data = await res.json();
+    if (res.status === 402) { toast('Insufficient credits — buy more in the Credits tab', 'error'); hideGenProgress(); return; }
+    if (res.status === 429) { toast('Rate limited — please wait a minute and try again', 'warning'); hideGenProgress(); return; }
     if (data.error) { toast('Error: ' + data.error, 'error'); hideGenProgress(); return; }
     const gen = data.data || data;
     const genId = gen.generation_id || gen.id;
@@ -676,25 +812,33 @@ async function generateRandom() {
   if (!slug) { toast('Select a character first', 'warning'); return; }
 
   const char = cachedCharacters.find(c => c.slug === slug);
-  if (!char || !char.reference_urls || char.reference_urls.length === 0) {
+  const hasRemoteRefs = char && char.reference_urls && char.reference_urls.length > 0;
+  const hasLocalFiles = char && char.local_files && char.local_files.length > 0;
+  if (!char || (!hasRemoteRefs && !hasLocalFiles)) {
     toast('Character has no reference images', 'error');
     return;
   }
 
   const btn = document.getElementById('btn-gen-random');
   btn.disabled = true;
-  showGenProgress('Generating random scene with ' + char.name + '...');
+  const progressMsg = hasRemoteRefs
+    ? 'Generating random scene with ' + char.name + '...'
+    : 'Converting local images & generating random scene with ' + char.name + '...';
+  showGenProgress(progressMsg);
 
   try {
     const res = await fetch('/api/generate/random', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        reference_image_urls: char.reference_urls.slice(0, 15),
+        reference_image_urls: hasRemoteRefs ? char.reference_urls.slice(0, 15) : [],
+        character_slug: hasRemoteRefs ? '' : char.slug,
         character_description: char.name
       })
     });
     const data = await res.json();
+    if (res.status === 402) { toast('Insufficient credits — buy more in the Credits tab', 'error'); hideGenProgress(); return; }
+    if (res.status === 429) { toast('Rate limited — please wait a minute and try again', 'warning'); hideGenProgress(); return; }
     if (data.error) { toast('Error: ' + data.error, 'error'); hideGenProgress(); return; }
     const gen = data.data || data;
     const genId = gen.generation_id || gen.id;
@@ -732,7 +876,9 @@ function setProgress(pct, text) {
 
 // ══════════ POLLING ══════════
 async function pollGeneration(generationId) {
-  const maxAttempts = 120;
+  const maxAttempts = 120;   // 120 × 2.5s = 5 min
+  const startTime = Date.now();
+  const timeoutMs = 5 * 60 * 1000; // 5 min per SKILL.md
   const statusMessages = [
     'Warming up the AI...',
     'Composing your scene...',
@@ -742,24 +888,46 @@ async function pollGeneration(generationId) {
   ];
 
   for (let attempts = 1; attempts <= maxAttempts; attempts++) {
+    // Per-task timeout check
+    if (Date.now() - startTime > timeoutMs) {
+      toast('Generation timed out (>5 min) — try again', 'warning');
+      hideGenProgress();
+      return;
+    }
+
     const pct = Math.min(95, 5 + (attempts / maxAttempts) * 90);
     const msgIndex = Math.min(statusMessages.length - 1, Math.floor((pct / 100) * statusMessages.length));
     setProgress(pct, `${statusMessages[msgIndex]} ${Math.round(pct)}%`);
 
     try {
       const res = await fetch(`/api/asset/status/${generationId}`);
+
+      // Handle 429 rate limit
+      if (res.status === 429) {
+        console.log('[POLL] Rate limited — backing off 15s');
+        await new Promise(r => setTimeout(r, 15000));
+        continue;
+      }
+
       const data = await res.json();
       const st = data.data || data;
       const status = st.status || 'pending';
+
       if (status === 'completed' || status === 'succeeded' || status === 'done') {
+        // Check download_available if present
+        if (st.download_available === false) {
+          await new Promise(r => setTimeout(r, 2500));
+          continue;
+        }
         setProgress(100, 'Done! Loading your image...');
         setTimeout(() => hideGenProgress(), 800);
         showResult(generationId);
         refreshBalance();
         return;
       } else if (status === 'failed' || status === 'error') {
-        toast('Generation failed: ' + (st.error_message || st.error || 'unknown'), 'error');
+        toast('Generation failed: ' + (st.error_message || st.error || 'unknown — credits auto-refunded'), 'error');
         hideGenProgress();
+        refreshBalance();
         return;
       }
     } catch { /* retry next round */ }
@@ -771,62 +939,135 @@ async function pollGeneration(generationId) {
   hideGenProgress();
 }
 
-function pollSetCharBatch(genIds) {
+function pollSetCharBatch(genIds, preCompleted = {}) {
   return new Promise(async (resolve) => {
-    const maxAttempts = 90; // 90 rounds × 10s pause = 15 minutes max
-    const completed = {};
+    const maxRounds = 90;                  // 90 rounds × 10s = 15 min max
+    const perTaskTimeoutMs = 5 * 60 * 1000; // 5 min per task (per SKILL.md)
+    const completed = { ...preCompleted };  // pre-loaded from recovery
     const failed = new Set();
+    const dlRetries = {};                   // download retry count per gid
+    const taskFirstSeen = {};               // when each task was first polled
 
-    for (let attempts = 1; attempts <= maxAttempts; attempts++) {
-      const doneCount = Object.keys(completed).length + failed.size;
-      const pct = Math.min(95, 5 + (doneCount / genIds.length) * 90);
+    for (let round = 1; round <= maxRounds; round++) {
       const readyCount = Object.keys(completed).length;
+      const doneCount = readyCount + failed.size;
+      const pct = Math.min(95, 5 + (doneCount / genIds.length) * 90);
       const phaseText = readyCount === 0 ? 'Generating reference images...' :
                         readyCount < 10 ? 'Building character profile...' :
                         readyCount < 18 ? 'Finishing up references...' : 'Almost done...';
       setProgress(pct, `${phaseText} ${readyCount}/${genIds.length} ready`);
 
-      // Poll each pending ID sequentially (rate-limit safe)
+      // Poll each pending ID sequentially (rate-limit safe per docs)
       for (const gid of genIds) {
         if (completed[gid] || failed.has(gid)) continue;
+
+        // Track when we first saw this task
+        if (!taskFirstSeen[gid]) taskFirstSeen[gid] = Date.now();
+
+        // Per-task timeout: if stuck >5 min, give up on it (per SKILL.md)
+        if (Date.now() - taskFirstSeen[gid] > perTaskTimeoutMs) {
+          console.log(`[POLL] ${gid.slice(0,8)} → TIMEOUT (>5 min stuck), giving up`);
+          failed.add(gid);
+          continue;
+        }
+
         try {
           const res = await fetch(`/api/asset/status/${gid}`);
+
+          // Handle 429 rate limit: back off 15 seconds (per SKILL.md)
+          if (res.status === 429) {
+            console.log(`[POLL] Rate limited (429) — backing off 15s`);
+            await new Promise(r => setTimeout(r, 15000));
+            continue;
+          }
+
           const data = await res.json();
           const st = data.data || data;
           const status = st.status || 'pending';
-          console.log(`[POLL] ${gid.slice(0,8)} → status: ${status}`);
+          const downloadAvailable = st.download_available;
+          console.log(`[POLL] ${gid.slice(0,8)} → status: ${status}, download_available: ${downloadAvailable}`);
 
           if (['completed', 'succeeded', 'done'].includes(status)) {
+            // Per docs: only download when download_available is true
+            // But some API versions may not return this field — so treat missing as true
+            if (downloadAvailable === false) {
+              console.log(`[POLL] ${gid.slice(0,8)} → completed but download_available=false, retry next round`);
+              continue;
+            }
+
             console.log(`[POLL] ${gid.slice(0,8)} → COMPLETED, fetching download...`);
+            dlRetries[gid] = (dlRetries[gid] || 0) + 1;
+
             try {
               const dlRes = await fetch(`/api/asset/download/${gid}`);
+
+              // Handle 409 Conflict: "generation not ready for download" (per SKILL.md)
+              if (dlRes.status === 409) {
+                console.log(`[POLL] ${gid.slice(0,8)} download 409 (not ready) — retry next round`);
+                continue;
+              }
+
+              // Handle 429 rate limit on download too
+              if (dlRes.status === 429) {
+                console.log(`[POLL] Download rate limited (429) — backing off 15s`);
+                await new Promise(r => setTimeout(r, 15000));
+                continue;
+              }
+
               const dlData = await dlRes.json();
+
+              // Backend returned temp error (503) — retry
+              if (dlData._retry || dlRes.status === 503) {
+                console.log(`[POLL] ${gid.slice(0,8)} download temp error (try ${dlRetries[gid]}/5) — will retry`);
+                if (dlRetries[gid] >= 5) { failed.add(gid); }
+                continue;
+              }
+
               const dd = dlData.data || dlData;
               const url = dd.download_url || dd.url;
               console.log(`[POLL] ${gid.slice(0,8)} download url: ${url}`);
-              if (url) completed[gid] = url;
-              else failed.add(gid);
-            } catch { failed.add(gid); }
+              if (url) {
+                completed[gid] = url;
+              } else {
+                console.log(`[POLL] ${gid.slice(0,8)} no download URL (try ${dlRetries[gid]}/5)`);
+                if (dlRetries[gid] >= 5) failed.add(gid);
+              }
+            } catch (dlErr) {
+              console.log(`[POLL] ${gid.slice(0,8)} download fetch error (try ${dlRetries[gid]}/5): ${dlErr}`);
+              if (dlRetries[gid] >= 5) failed.add(gid);
+            }
           } else if (['failed', 'error'].includes(status)) {
+            // Credits auto-refunded on failure (per SKILL.md)
+            const errMsg = st.error_message || st.error || '';
+            console.log(`[POLL] ${gid.slice(0,8)} → FAILED: ${errMsg}`);
             failed.add(gid);
           }
-        } catch { /* skip, retry next round */ }
+          // else: pending/processing — just continue to next round
+        } catch {
+          // Network error on status check — skip, retry next round
+        }
       }
 
       const totalDone = Object.keys(completed).length + failed.size;
-      console.log(`[POLL] Round ${attempts}: ${Object.keys(completed).length} completed, ${failed.size} failed, ${genIds.length - totalDone} pending`);
+      console.log(`[POLL] Round ${round}: ${Object.keys(completed).length} completed, ${failed.size} failed, ${genIds.length - totalDone} pending`);
+
+      // Save progress to localStorage after each round
+      updatePendingSetChar(completed, Array.from(failed));
 
       if (totalDone >= genIds.length) {
         break;
       }
 
-      // Wait 10 seconds before next round
+      // Wait 10 seconds before next round (per SKILL.md)
       await new Promise(r => setTimeout(r, 10000));
     }
 
-    const totalDone = Object.keys(completed).length + failed.size;
+    const readyCount = Object.keys(completed).length;
+    const totalDone = readyCount + failed.size;
     if (totalDone < genIds.length) {
-      toast(`Timed out — ${Object.keys(completed).length} of ${genIds.length} images completed.`, 'warning');
+      toast(`Timed out — ${readyCount} of ${genIds.length} images completed.`, 'warning');
+    } else if (failed.size > 0) {
+      toast(`${readyCount} of ${genIds.length} images ready (${failed.size} failed — credits auto-refunded).`, 'warning');
     }
     setProgress(100, 'Character created!');
     setTimeout(() => hideGenProgress(), 800);
@@ -1040,3 +1281,15 @@ window.openCharFolder = openCharFolder;
 window.viewCharacterRefs = viewCharacterRefs;
 window.useInSetChar = useInSetChar;
 window.clearGallery = clearGallery;
+
+// Warn user before closing/refreshing if a SetChar is in progress
+window.addEventListener('beforeunload', (e) => {
+  const pending = getPendingSetChar();
+  if (pending && pending.genIds && pending.genIds.length > 0) {
+    const completed = pending.completed ? Object.keys(pending.completed).length : 0;
+    if (completed < pending.genIds.length) {
+      e.preventDefault();
+      e.returnValue = 'SetChar is still in progress. You can resume after refreshing, but the server must be running.';
+    }
+  }
+});

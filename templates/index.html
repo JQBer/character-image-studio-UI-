@@ -154,7 +154,10 @@
         <div class="card-body">
           <!-- My Characters -->
           <div id="my-characters-section" class="mb-16" style="display:none;">
-            <div class="cred-label" style="margin-bottom:8px;">MY CHARACTERS</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <div class="cred-label" style="margin-bottom:0;">MY CHARACTERS</div>
+              <button id="btn-rescan-chars" class="btn btn-sm" style="font-size:11px;padding:3px 10px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;cursor:pointer;color:#ccc;" title="Scan characters/ folder for manually added characters">&#x1F504; Rescan</button>
+            </div>
             <div id="my-characters-grid" style="display:flex;flex-wrap:wrap;gap:10px;overflow-x:auto;"></div>
           </div>
 
