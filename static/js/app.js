@@ -524,7 +524,11 @@ function populateCharacterSelects() {
     cachedCharacters.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.slug;
-      opt.textContent = `${c.name} (${c.reference_count || 0} refs)`;
+      const hasRemote = c.reference_urls && c.reference_urls.length > 0;
+      const label = hasRemote
+        ? `${c.name} (${c.reference_count || 0} refs)`
+        : `${c.name} (${c.reference_count || 0} local refs)`;
+      opt.textContent = label;
       el.appendChild(opt);
     });
     if (current) el.value = current;
@@ -770,10 +774,9 @@ async function generateWithCharacter() {
 
   const btn = document.getElementById('btn-gen-generate');
   btn.disabled = true;
-  const progressMsg = hasRemoteRefs
+  showGenProgress(hasRemoteRefs
     ? 'Generating image with ' + char.name + '...'
-    : 'Converting local images & generating with ' + char.name + '...';
-  showGenProgress(progressMsg);
+    : 'Converting local images & generating with ' + char.name + ' (may take longer)...');
 
   try {
     const res = await fetch('/api/generate/create', {
@@ -821,10 +824,9 @@ async function generateRandom() {
 
   const btn = document.getElementById('btn-gen-random');
   btn.disabled = true;
-  const progressMsg = hasRemoteRefs
+  showGenProgress(hasRemoteRefs
     ? 'Generating random scene with ' + char.name + '...'
-    : 'Converting local images & generating random scene with ' + char.name + '...';
-  showGenProgress(progressMsg);
+    : 'Converting local images & generating random scene with ' + char.name + ' (may take longer)...');
 
   try {
     const res = await fetch('/api/generate/random', {

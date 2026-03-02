@@ -538,9 +538,10 @@ def open_character_folder(slug):
 # ──────────────────────────────────────────────
 
 
-def _get_local_refs_as_base64(slug, max_refs=15):
+def _get_local_refs_as_base64(slug, max_refs=8):
     """Read local reference images for a character and return as base64 data URIs.
-    Used when a character has no remote reference_urls (manually imported)."""
+    Aggressively compresses images to keep payload small and avoid API failures.
+    max_refs=8 to keep total payload under ~10MB."""
     import base64 as b64mod
     data = _load_characters()
     char = None
@@ -571,12 +572,12 @@ def _get_local_refs_as_base64(slug, max_refs=15):
             raw = fpath.read_bytes()
             b64 = b64mod.b64encode(raw).decode('ascii')
             data_uri = f"data:{mime};base64,{b64}"
-            # Compress if too large (>4MB)
-            data_uri = _compress_base64_image(data_uri)
+            # Compress to max 1MB per image to keep payload small
+            data_uri = _compress_base64_image(data_uri, max_bytes=1_000_000)
             result.append(data_uri)
         except Exception as e:
             print(f"[BASE64] Error reading {fpath}: {e}")
-    print(f"[BASE64] Converted {len(result)} local images for character '{slug}'")
+    print(f"[BASE64] Converted {len(result)} local images for character '{slug}' (max {max_refs})")
     return result
 
 
@@ -622,12 +623,15 @@ def generate_seed():
 def generate_create():
     body = request.json or {}
     ref_urls = body.get("reference_image_urls", [])
-    # If no remote URLs but a character_slug provided, use local images as base64
     char_slug = body.get("character_slug", "")
+    uses_base64 = False
+    # If no remote URLs but a character_slug provided, use local images as base64
     if not ref_urls and char_slug:
         ref_urls = _get_local_refs_as_base64(char_slug)
+        uses_base64 = True
         if not ref_urls:
             return jsonify({"error": "Character has no reference images (local or remote)"}), 400
+    timeout = 120 if uses_base64 else 60  # more time for large base64 payloads
     try:
         payload = {
             "prompt": body.get("prompt", ""),
@@ -638,7 +642,7 @@ def generate_create():
             f"{API_BASE_URL}/api/v1/generate/create",
             headers=get_auth_header(),
             json=payload,
-            timeout=60,
+            timeout=timeout,
         )
         if resp.status_code == 401:
             if auto_login():
@@ -646,7 +650,7 @@ def generate_create():
                     f"{API_BASE_URL}/api/v1/generate/create",
                     headers=get_auth_header(),
                     json=payload,
-                    timeout=60,
+                    timeout=timeout,
                 )
         if resp.status_code in (402, 429):
             try:
@@ -665,12 +669,14 @@ def generate_create():
 def generate_random():
     body = request.json or {}
     ref_urls = body.get("reference_image_urls", [])
-    # If no remote URLs but a character_slug provided, use local images as base64
     char_slug = body.get("character_slug", "")
+    uses_base64 = False
     if not ref_urls and char_slug:
         ref_urls = _get_local_refs_as_base64(char_slug)
+        uses_base64 = True
         if not ref_urls:
             return jsonify({"error": "Character has no reference images (local or remote)"}), 400
+    timeout = 120 if uses_base64 else 60
     try:
         payload = {
             "reference_image_urls": ref_urls,
@@ -680,7 +686,7 @@ def generate_random():
             f"{API_BASE_URL}/api/v1/generate/random",
             headers=get_auth_header(),
             json=payload,
-            timeout=60,
+            timeout=timeout,
         )
         if resp.status_code == 401:
             if auto_login():
@@ -688,7 +694,7 @@ def generate_random():
                     f"{API_BASE_URL}/api/v1/generate/random",
                     headers=get_auth_header(),
                     json=payload,
-                    timeout=60,
+                    timeout=timeout,
                 )
         if resp.status_code in (402, 429):
             try:
